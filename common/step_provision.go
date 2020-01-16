@@ -58,6 +58,8 @@ func PopulateProvisionHookData(state multistep.StateBag) map[string]interface{} 
 	commConf := comm.(*communicator.Config)
 
 	// Loop over all field values and retrieve them from the ssh config
+	log.Printf("Megan commconf is %#v", commConf)
+	log.Printf("Megan val from commcomf is %#v", commConf.Host())
 	hookData["Host"] = commConf.Host()
 	hookData["Port"] = commConf.Port()
 	hookData["User"] = commConf.User()

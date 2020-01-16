@@ -4,18 +4,11 @@ package ansible
 
 import (
 	"bufio"
-	"bytes"
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
-	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
-	"net"
 	"os"
 	"os/exec"
 	"os/user"
@@ -26,14 +19,10 @@ import (
 	"sync"
 	"unicode"
 
-	"golang.org/x/crypto/ssh"
-
 	"github.com/hashicorp/hcl/v2/hcldec"
 	"github.com/hashicorp/packer/common"
-	"github.com/hashicorp/packer/common/adapter"
 	"github.com/hashicorp/packer/helper/config"
 	"github.com/hashicorp/packer/packer"
-	"github.com/hashicorp/packer/packer/tmp"
 	"github.com/hashicorp/packer/template/interpolate"
 )
 
@@ -55,10 +44,7 @@ type Config struct {
 	EmptyGroups          []string `mapstructure:"empty_groups"`
 	HostAlias            string   `mapstructure:"host_alias"`
 	User                 string   `mapstructure:"user"`
-	LocalPort            int      `mapstructure:"local_port"`
-	SSHHostKeyFile       string   `mapstructure:"ssh_host_key_file"`
 	SSHAuthorizedKeyFile string   `mapstructure:"ssh_authorized_key_file"`
-	SFTPCmd              string   `mapstructure:"sftp_command"`
 	SkipVersionCheck     bool     `mapstructure:"skip_version_check"`
 	UseSFTP              bool     `mapstructure:"use_sftp"`
 	InventoryDirectory   string   `mapstructure:"inventory_directory"`
@@ -71,7 +57,6 @@ type Config struct {
 
 type Provisioner struct {
 	config            Config
-	adapter           *adapter.Adapter
 	done              chan struct{}
 	ansibleVersion    string
 	ansibleMajVersion uint
@@ -129,22 +114,9 @@ func (p *Provisioner) Prepare(raws ...interface{}) error {
 			errs = packer.MultiErrorAppend(errs, err)
 		}
 	}
-	if len(p.config.SSHHostKeyFile) > 0 {
-		err = validateFileConfig(p.config.SSHHostKeyFile, "ssh_host_key_file", true)
-		if err != nil {
-			log.Println(p.config.SSHHostKeyFile, "does not exist")
-			errs = packer.MultiErrorAppend(errs, err)
-		}
-	} else {
-		p.config.AnsibleEnvVars = append(p.config.AnsibleEnvVars, "ANSIBLE_HOST_KEY_CHECKING=False")
-	}
 
 	if !p.config.UseSFTP {
 		p.config.AnsibleEnvVars = append(p.config.AnsibleEnvVars, "ANSIBLE_SCP_IF_SSH=True")
-	}
-
-	if p.config.LocalPort > 65535 {
-		errs = packer.MultiErrorAppend(errs, fmt.Errorf("local_port: %d must be a valid port", p.config.LocalPort))
 	}
 
 	if len(p.config.InventoryDirectory) > 0 {
@@ -228,93 +200,6 @@ func (p *Provisioner) Provision(ctx context.Context, ui packer.Ui, comm packer.C
 		p.config.ExtraArguments[i] = arg
 	}
 
-	k, err := newUserKey(p.config.SSHAuthorizedKeyFile)
-	if err != nil {
-		return err
-	}
-
-	hostSigner, err := newSigner(p.config.SSHHostKeyFile)
-	if err != nil {
-		return fmt.Errorf("error creating host signer: %s", err)
-	}
-
-	// Remove the private key file
-	if len(k.privKeyFile) > 0 {
-		defer os.Remove(k.privKeyFile)
-	}
-
-	keyChecker := ssh.CertChecker{
-		UserKeyFallback: func(conn ssh.ConnMetadata, pubKey ssh.PublicKey) (*ssh.Permissions, error) {
-			if user := conn.User(); user != p.config.User {
-				return nil, errors.New(fmt.Sprintf("authentication failed: %s is not a valid user", user))
-			}
-
-			if !bytes.Equal(k.Marshal(), pubKey.Marshal()) {
-				return nil, errors.New("authentication failed: unauthorized key")
-			}
-
-			return nil, nil
-		},
-		IsUserAuthority: func(k ssh.PublicKey) bool { return true },
-	}
-
-	config := &ssh.ServerConfig{
-		AuthLogCallback: func(conn ssh.ConnMetadata, method string, err error) {
-			log.Printf("authentication attempt from %s to %s as %s using %s", conn.RemoteAddr(), conn.LocalAddr(), conn.User(), method)
-		},
-		PublicKeyCallback: keyChecker.Authenticate,
-		//NoClientAuth:      true,
-	}
-
-	config.AddHostKey(hostSigner)
-
-	localListener, err := func() (net.Listener, error) {
-
-		port := p.config.LocalPort
-		tries := 1
-		if port != 0 {
-			tries = 10
-		}
-		for i := 0; i < tries; i++ {
-			l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-			port++
-			if err != nil {
-				ui.Say(err.Error())
-				continue
-			}
-			_, portStr, err := net.SplitHostPort(l.Addr().String())
-			if err != nil {
-				ui.Say(err.Error())
-				continue
-			}
-			p.config.LocalPort, err = strconv.Atoi(portStr)
-			if err != nil {
-				ui.Say(err.Error())
-				continue
-			}
-			return l, nil
-		}
-		return nil, errors.New("Error setting up SSH proxy connection")
-	}()
-
-	if err != nil {
-		return err
-	}
-
-	ui = &packer.SafeUi{
-		Sem: make(chan int, 1),
-		Ui:  ui,
-	}
-	p.adapter = adapter.NewAdapter(p.done, localListener, config, p.config.SFTPCmd, ui, comm)
-
-	defer func() {
-		log.Print("shutting down the SSH proxy")
-		close(p.done)
-		p.adapter.Shutdown()
-	}()
-
-	go p.adapter.Serve()
-
 	if len(p.config.InventoryFile) == 0 {
 		tf, err := ioutil.TempFile(p.config.InventoryDirectory, "packer-provisioner-ansible")
 		if err != nil {
@@ -322,11 +207,16 @@ func (p *Provisioner) Provision(ctx context.Context, ui packer.Ui, comm packer.C
 		}
 		defer os.Remove(tf.Name())
 
-		host := fmt.Sprintf("%s ansible_host=127.0.0.1 ansible_user=%s ansible_port=%d\n",
-			p.config.HostAlias, p.config.User, p.config.LocalPort)
+		hostIP, ok := p.generatedData["Host"]
+		log.Printf("Megan hostIP is %#v", hostIP)
+		if !ok {
+			return fmt.Errorf("Couldn't load hostIP from generated data.")
+		}
+		host := fmt.Sprintf("%s ansible_host=%s ansible_user=%s\n",
+			p.config.HostAlias, hostIP, p.config.User)
 		if p.ansibleMajVersion < 2 {
-			host = fmt.Sprintf("%s ansible_ssh_host=127.0.0.1 ansible_ssh_user=%s ansible_ssh_port=%d\n",
-				p.config.HostAlias, p.config.User, p.config.LocalPort)
+			host = fmt.Sprintf("%s ansible_ssh_host=%s ansible_ssh_user=%s\n",
+				p.config.HostAlias, hostIP, p.config.User)
 		}
 
 		w := bufio.NewWriter(tf)
@@ -350,7 +240,7 @@ func (p *Provisioner) Provision(ctx context.Context, ui packer.Ui, comm packer.C
 		}()
 	}
 
-	if err := p.executeAnsible(ui, comm, k.privKeyFile); err != nil {
+	if err := p.executeAnsible(ui, comm, p.config.SSHAuthorizedKeyFile); err != nil {
 		return fmt.Errorf("Error executing Ansible: %s", err)
 	}
 
@@ -536,93 +426,4 @@ func validateInventoryDirectoryConfig(name string) error {
 		return fmt.Errorf("inventory_directory: %s must point to a directory", name)
 	}
 	return nil
-}
-
-type userKey struct {
-	ssh.PublicKey
-	privKeyFile string
-}
-
-func newUserKey(pubKeyFile string) (*userKey, error) {
-	userKey := new(userKey)
-	if len(pubKeyFile) > 0 {
-		pubKeyBytes, err := ioutil.ReadFile(pubKeyFile)
-		if err != nil {
-			return nil, errors.New("Failed to read public key")
-		}
-		userKey.PublicKey, _, _, _, err = ssh.ParseAuthorizedKey(pubKeyBytes)
-		if err != nil {
-			return nil, errors.New("Failed to parse authorized key")
-		}
-
-		return userKey, nil
-	}
-
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return nil, errors.New("Failed to generate key pair")
-	}
-	userKey.PublicKey, err = ssh.NewPublicKey(key.Public())
-	if err != nil {
-		return nil, errors.New("Failed to extract public key from generated key pair")
-	}
-
-	// To support Ansible calling back to us we need to write
-	// this file down
-	privateKeyDer := x509.MarshalPKCS1PrivateKey(key)
-	privateKeyBlock := pem.Block{
-		Type:    "RSA PRIVATE KEY",
-		Headers: nil,
-		Bytes:   privateKeyDer,
-	}
-	tf, err := tmp.File("ansible-key")
-	if err != nil {
-		return nil, errors.New("failed to create temp file for generated key")
-	}
-	_, err = tf.Write(pem.EncodeToMemory(&privateKeyBlock))
-	if err != nil {
-		return nil, errors.New("failed to write private key to temp file")
-	}
-
-	err = tf.Close()
-	if err != nil {
-		return nil, errors.New("failed to close private key temp file")
-	}
-	userKey.privKeyFile = tf.Name()
-
-	return userKey, nil
-}
-
-type signer struct {
-	ssh.Signer
-}
-
-func newSigner(privKeyFile string) (*signer, error) {
-	signer := new(signer)
-
-	if len(privKeyFile) > 0 {
-		privateBytes, err := ioutil.ReadFile(privKeyFile)
-		if err != nil {
-			return nil, errors.New("Failed to load private host key")
-		}
-
-		signer.Signer, err = ssh.ParsePrivateKey(privateBytes)
-		if err != nil {
-			return nil, errors.New("Failed to parse private host key")
-		}
-
-		return signer, nil
-	}
-
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return nil, errors.New("Failed to generate server key pair")
-	}
-
-	signer.Signer, err = ssh.NewSignerFromKey(key)
-	if err != nil {
-		return nil, errors.New("Failed to extract private key from generated key pair")
-	}
-
-	return signer, nil
 }
