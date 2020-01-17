@@ -24,10 +24,7 @@ type FlatConfig struct {
 	EmptyGroups          []string          `mapstructure:"empty_groups" cty:"empty_groups"`
 	HostAlias            *string           `mapstructure:"host_alias" cty:"host_alias"`
 	User                 *string           `mapstructure:"user" cty:"user"`
-	LocalPort            *int              `mapstructure:"local_port" cty:"local_port"`
-	SSHHostKeyFile       *string           `mapstructure:"ssh_host_key_file" cty:"ssh_host_key_file"`
 	SSHAuthorizedKeyFile *string           `mapstructure:"ssh_authorized_key_file" cty:"ssh_authorized_key_file"`
-	SFTPCmd              *string           `mapstructure:"sftp_command" cty:"sftp_command"`
 	SkipVersionCheck     *bool             `mapstructure:"skip_version_check" cty:"skip_version_check"`
 	UseSFTP              *bool             `mapstructure:"use_sftp" cty:"use_sftp"`
 	InventoryDirectory   *string           `mapstructure:"inventory_directory" cty:"inventory_directory"`
@@ -65,10 +62,7 @@ func (*FlatConfig) HCL2Spec() map[string]hcldec.Spec {
 		"empty_groups":               &hcldec.AttrSpec{Name: "empty_groups", Type: cty.List(cty.String), Required: false},
 		"host_alias":                 &hcldec.AttrSpec{Name: "host_alias", Type: cty.String, Required: false},
 		"user":                       &hcldec.AttrSpec{Name: "user", Type: cty.String, Required: false},
-		"local_port":                 &hcldec.AttrSpec{Name: "local_port", Type: cty.Number, Required: false},
-		"ssh_host_key_file":          &hcldec.AttrSpec{Name: "ssh_host_key_file", Type: cty.String, Required: false},
 		"ssh_authorized_key_file":    &hcldec.AttrSpec{Name: "ssh_authorized_key_file", Type: cty.String, Required: false},
-		"sftp_command":               &hcldec.AttrSpec{Name: "sftp_command", Type: cty.String, Required: false},
 		"skip_version_check":         &hcldec.AttrSpec{Name: "skip_version_check", Type: cty.Bool, Required: false},
 		"use_sftp":                   &hcldec.AttrSpec{Name: "use_sftp", Type: cty.Bool, Required: false},
 		"inventory_directory":        &hcldec.AttrSpec{Name: "inventory_directory", Type: cty.String, Required: false},
