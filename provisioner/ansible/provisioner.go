@@ -115,6 +115,8 @@ func (p *Provisioner) Prepare(raws ...interface{}) error {
 		}
 	}
 
+	p.config.AnsibleEnvVars = append(p.config.AnsibleEnvVars, "ANSIBLE_HOST_KEY_CHECKING=False")
+
 	if !p.config.UseSFTP {
 		p.config.AnsibleEnvVars = append(p.config.AnsibleEnvVars, "ANSIBLE_SCP_IF_SSH=True")
 	}
